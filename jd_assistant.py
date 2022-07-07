@@ -650,10 +650,10 @@ class Assistant(object):
                 soup = BeautifulSoup(resp.text, "html.parser")
                 result = bool(soup.select('h3.ftx-02'))  # [<h3 class="ftx-02">商品已成功加入购物车！</h3>]
 
-            if result:
-                logger.info('%s x %s 已成功加入购物车', sku_id, count)
-            else:
-                logger.error('%s 添加到购物车失败', sku_id)
+            # if result:
+            #     logger.info('%s x %s 已成功加入购物车', sku_id, count)
+            # else:
+            #     logger.error('%s 添加到购物车失败', sku_id)
 
     @check_login
     def clear_cart(self):
@@ -765,6 +765,7 @@ class Assistant(object):
             'Referer': 'https://cart.jd.com/cart',
         }
         resp = self.sess.post(url, data=data, headers=headers)
+        print(resp.text)
         return json.loads(resp.text)['sortedWebCartResult']['achieveSevenState'] == 2
 
     def _add_or_change_cart_item(self, cart, sku_id, count):
@@ -929,9 +930,9 @@ class Assistant(object):
         }
 
         try:
+            self._save_invoice()
             resp = self.sess.post(url=url, data=data, headers=headers)
             resp_json = json.loads(resp.text)
-
             # 返回信息示例：
             # 下单失败
             # {'overSea': False, 'orderXml': None, 'cartXml': None, 'noStockSkuIds': '', 'reqInfo': None, 'hasJxj': False, 'addedServiceList': None, 'sign': None, 'pin': 'xxx', 'needCheckCode': False, 'success': False, 'resultCode': 60123, 'orderId': 0, 'submitSkuNum': 0, 'deductMoneyFlag': 0, 'goJumpOrderCenter': False, 'payInfo': None, 'scaleSkuInfoListVO': None, 'purchaseSkuInfoListVO': None, 'noSupportHomeServiceSkuList': None, 'msgMobile': None, 'addressVO': None, 'msgUuid': None, 'message': '请输入支付密码！'}
@@ -951,7 +952,7 @@ class Assistant(object):
             else:
                 message, result_code = resp_json.get('message'), resp_json.get('resultCode')
                 if result_code == 0:
-                    self._save_invoice()
+                    
                     message = message + '(下单商品可能为第三方商品，将切换为普通发票进行尝试)'
                 elif result_code == 60077:
                     message = message + '(可能是购物车为空 或 未勾选购物车中商品)'
@@ -973,7 +974,7 @@ class Assistant(object):
         """
         for i in range(1, retry + 1):
             logger.info('第[%s/%s]次尝试提交订单', i, retry)
-            self.get_checkout_page_detail()
+            # self.get_checkout_page_detail()
             if self.submit_order():
                 logger.info('第%s次提交订单成功', i)
                 return True
@@ -1391,10 +1392,14 @@ class Assistant(object):
                         logger.info('%s 不满足下单条件，%ss后进行下一次查询', sku_id, stock_interval)
                     else:
                         logger.info('%s 满足下单条件，开始执行', sku_id)
-                        self._cancel_select_all_cart_item()
-                        self._add_or_change_cart_item(self.get_cart_detail(), sku_id, count)
-                        if self.submit_order_with_retry(submit_retry, submit_interval):
+                        # self._cancel_select_all_cart_item()
+                        # self._add_or_change_cart_item(self.get_cart_detail(), sku_id, count)
+                        self.add_item_to_cart(sku_ids={sku_id: count})
+                        # if self.submit_order_with_retry(submit_retry, submit_interval):
+                        #     return
+                        if self.submit_order():
                             return
+                        self.clear_cart()
 
                     time.sleep(stock_interval)
         else:
@@ -1413,3 +1418,41 @@ class Assistant(object):
                         return
 
                 time.sleep(stock_interval)
+
+    @check_login
+    def buy_item_in_cart(self, sku_ids, area, wait_all=False, stock_interval=3, submit_retry=3, submit_interval=5):
+        """根据库存自动下单商品
+        :param sku_ids: 商品id。可以设置多个商品，也可以带数量，如：'1234' 或 '1234,5678' 或 '1234:2' 或 '1234:2,5678:3'
+        :param area: 地区id
+        :param wait_all: 是否等所有商品都有货才一起下单，可选参数，默认False
+        :param stock_interval: 查询库存时间间隔，可选参数，默认3秒
+        :param submit_retry: 提交订单失败后重试次数，可选参数，默认3次
+        :param submit_interval: 提交订单失败后重试时间间隔，可选参数，默认5秒
+        :return:
+        """
+        items_dict = parse_sku_id(sku_ids)
+        items_list = list(items_dict.keys())
+        area_id = parse_area_id(area=area)
+        # cart_detail = self.get_cart_detail()
+        # print(cart_detail)
+
+        logger.info('下单模式：%s 任一商品有货并且未下架均会尝试下单', items_list)
+        while True:
+            # for (sku_id, count) in items_dict.items():
+            if not self.if_item_can_be_ordered(sku_ids={sku_id: count}, area=area_id):
+                logger.info('%s 不满足下单条件，%ss后进行下一次查询', sku_id, stock_interval)
+            else:
+                logger.info('%s 满足下单条件，开始执行', sku_id)
+                # self._cancel_select_all_cart_item()
+                # res = self._change_item_num_in_cart(sku_id=sku_id,
+                #                             vender_id=cart_item.get('vender_id'),
+                #                             num=count,
+                #                             p_type=cart_item.get('p_type'),
+                #                             target_id=cart_item.get('target_id'),
+                #                             promo_id=cart_item.get('promo_id'))
+                # if res:
+                #     print("成功修改购物车内商品数量并勾选！")
+                if self.submit_order_with_retry(submit_retry, submit_interval):
+                    return
+
+            time.sleep(stock_interval)
